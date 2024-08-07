@@ -1,6 +1,17 @@
-<!-- src/views/HomeView.vue -->
 <template>
   <div class="home-view">
+    <!-- Profile Picture Upload -->
+    <div class="profile-picture-upload" v-if="isAuthenticated">
+      <img :src="userProfilePic" alt="User" class="user-pic" @click="triggerFileInput">
+      <input 
+        type="file" 
+        ref="fileInput" 
+        style="display: none" 
+        @change="uploadProfilePicture" 
+        accept="image/*"
+      >
+    </div>
+
     <!-- Create Post Area -->
     <div class="create-post" v-if="isAuthenticated">
       <img :src="userProfilePic" alt="User" class="user-pic">
@@ -58,6 +69,7 @@ export default {
   setup() {
     const posts = ref([])
     const router = useRouter()
+    const fileInput = ref(null)
 
     const isAuthenticated = computed(() => !!localStorage.getItem('token'))
 
@@ -70,6 +82,8 @@ export default {
       return null
     })
 
+    const userProfilePic = ref('/path/to/default/profile/picture.jpg')
+
     const fetchPosts = async () => {
       try {
         const response = await fetch('http://localhost:3000/posts')
@@ -80,6 +94,24 @@ export default {
         })
       } catch (error) {
         console.error('Error fetching posts:', error)
+      }
+    }
+
+    const fetchUserProfile = async () => {
+      if (currentUser.value) {
+        try {
+          const response = await fetch(`http://localhost:3000/users/${currentUser.value}`, {
+            headers: {
+              'Authorization': `Bearer ${localStorage.getItem('token')}`
+            }
+          })
+          const userData = await response.json()
+          if (userData.profilePicture) {
+            userProfilePic.value = `http://localhost:3000${userData.profilePicture}`
+          }
+        } catch (error) {
+          console.error('Error fetching user profile:', error)
+        }
       }
     }
 
@@ -133,12 +165,43 @@ export default {
     }
 
     const getProfilePic = (author) => {
-      return `https://via.placeholder.com/40?text=${author.username.charAt(0).toUpperCase()}`
+      return author.profilePicture 
+        ? `http://localhost:3000${author.profilePicture}`
+        : `https://via.placeholder.com/40?text=${author.username.charAt(0).toUpperCase()}`
     }
 
-    const userProfilePic = computed(() => {
-      return `https://via.placeholder.com/40?text=U`
-    })
+    const triggerFileInput = () => {
+      fileInput.value.click()
+    }
+
+    const uploadProfilePicture = async (event) => {
+      const file = event.target.files[0]
+      if (!file) return
+
+      const formData = new FormData()
+      formData.append('profilePicture', file)
+
+      try {
+        const response = await fetch('http://localhost:3000/users/profile-picture', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+          },
+          body: formData
+        })
+
+        const data = await response.json()
+        if (response.ok) {
+          userProfilePic.value = `http://localhost:3000${data.profilePicture}`
+          alert('Profile picture updated successfully')
+        } else {
+          alert(data.message || 'Failed to update profile picture')
+        }
+      } catch (error) {
+        console.error('Error uploading profile picture:', error)
+        alert('An error occurred while uploading the profile picture')
+      }
+    }
 
     const likePost = async (post) => {
       if (!isAuthenticated.value) {
@@ -206,18 +269,24 @@ export default {
       // In a real application, you might open a share dialog or copy a link to the clipboard
     }
 
-    onMounted(fetchPosts)
+    onMounted(() => {
+      fetchPosts()
+      fetchUserProfile()
+    })
 
     return { 
       posts, 
       isAuthenticated,
+      userProfilePic,
       getFullUrl, 
       isAuthor, 
       deletePost,
       goToCreatePost,
       formatDate,
       getProfilePic,
-      userProfilePic,
+      fileInput,
+      triggerFileInput,
+      uploadProfilePicture,
       likePost,
       isLiked,
       toggleComments,
@@ -232,6 +301,19 @@ export default {
 .home-view {
   max-width: 680px;
   margin: 0 auto;
+}
+
+.profile-picture-upload {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.profile-picture-upload .user-pic {
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  cursor: pointer;
+  object-fit: cover;
 }
 
 .create-post {
@@ -249,6 +331,7 @@ export default {
   height: 40px;
   border-radius: 50%;
   margin-right: 10px;
+  object-fit: cover;
 }
 
 .create-post-input {
@@ -279,6 +362,7 @@ export default {
   height: 40px;
   border-radius: 50%;
   margin-right: 10px;
+  object-fit: cover;
 }
 
 .post-info {

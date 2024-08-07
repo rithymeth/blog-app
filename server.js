@@ -1,4 +1,3 @@
-// server.js
 const express = require('express');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
@@ -20,15 +19,15 @@ mongoose.connect('mongodb+srv://admin:1331@cluster0.qbwusi2.mongodb.net/')
 
 // Models
 const User = mongoose.model('User', {
-    username: String,
-    password: String,
-    bio: { type: String, default: '' },
-    friends: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-    profilePicture: { type: String, default: '' }
-  });
+  username: String,
+  password: String,
+  bio: { type: String, default: '' },
+  friends: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  friendRequests: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  profilePicture: { type: String, default: '' },
+  coverPhoto: { type: String, default: '' }
+});
 
-
-  
 const BlogPost = mongoose.model('BlogPost', {
   title: String,
   content: String,
@@ -72,11 +71,6 @@ const auth = (req, res, next) => {
 };
 
 // Routes
-
-// Welcome route
-app.get('/', (req, res) => {
-  res.json({ message: "Welcome to the Blog API. Use /posts to access blog posts." });
-});
 
 // Register user
 app.post('/register', async (req, res) => {
@@ -144,7 +138,7 @@ app.post('/posts', auth, upload.fields([
 app.get('/posts', async (req, res) => {
   try {
     const posts = await BlogPost.find()
-      .populate('author', 'username')
+      .populate('author', 'username profilePicture')
       .sort({ createdAt: -1 });
     res.send(posts);
   } catch (error) {
@@ -157,10 +151,10 @@ app.get('/posts', async (req, res) => {
 app.get('/posts/:id', async (req, res) => {
   try {
     const post = await BlogPost.findById(req.params.id)
-      .populate('author', 'username')
+      .populate('author', 'username profilePicture')
       .populate({
         path: 'comments',
-        populate: { path: 'author', select: 'username' }
+        populate: { path: 'author', select: 'username profilePicture' }
       });
     if (!post) {
       return res.status(404).send({ message: "Post not found" });
@@ -218,12 +212,35 @@ app.delete('/posts/:id', auth, async (req, res) => {
 // Get user profile
 app.get('/users/:id', auth, async (req, res) => {
   try {
-    const user = await User.findById(req.params.id).select('-password').populate('friends', 'username');
+    const user = await User.findById(req.params.id)
+      .select('-password')
+      .populate('friends', 'username profilePicture')
+      .populate('friendRequests', 'username profilePicture');
     if (!user) {
       return res.status(404).send({ message: 'User not found' });
     }
-    res.send(user);
+    
+    // Get post count for the user
+    const postCount = await BlogPost.countDocuments({ author: req.params.id });
+    
+    res.send({
+      ...user.toObject(),
+      postCount
+    });
   } catch (error) {
+    res.status(500).send({ message: error.message });
+  }
+});
+
+// Get posts for a specific user
+app.get('/users/:id/posts', async (req, res) => {
+  try {
+    const posts = await BlogPost.find({ author: req.params.id })
+      .populate('author', 'username profilePicture')
+      .sort({ createdAt: -1 });
+    res.send(posts);
+  } catch (error) {
+    console.error('Error in GET /users/:id/posts:', error);
     res.status(500).send({ message: error.message });
   }
 });
@@ -257,8 +274,50 @@ app.patch('/users/:id', auth, async (req, res) => {
   }
 });
 
-// Add friend
-app.post('/users/:id/friends', auth, async (req, res) => {
+// Upload profile picture
+app.post('/users/profile-picture', auth, upload.single('profilePicture'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).send({ message: 'No file uploaded' });
+    }
+
+    const user = await User.findById(req.userId);
+    if (!user) {
+      return res.status(404).send({ message: 'User not found' });
+    }
+
+    user.profilePicture = `/uploads/${req.file.filename}`;
+    await user.save();
+
+    res.send({ message: 'Profile picture uploaded successfully', profilePicture: user.profilePicture });
+  } catch (error) {
+    res.status(400).send({ message: error.message });
+  }
+});
+
+// Upload cover photo
+app.post('/users/cover-photo', auth, upload.single('coverPhoto'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).send({ message: 'No file uploaded' });
+    }
+
+    const user = await User.findById(req.userId);
+    if (!user) {
+      return res.status(404).send({ message: 'User not found' });
+    }
+
+    user.coverPhoto = `/uploads/${req.file.filename}`;
+    await user.save();
+
+    res.send({ message: 'Cover photo uploaded successfully', coverPhoto: user.coverPhoto });
+  } catch (error) {
+    res.status(400).send({ message: error.message });
+  }
+});
+
+// Send friend request
+app.post('/users/:id/friend-request', auth, async (req, res) => {
   try {
     const user = await User.findById(req.userId);
     const friendToAdd = await User.findById(req.params.id);
@@ -271,12 +330,67 @@ app.post('/users/:id/friends', auth, async (req, res) => {
       return res.status(400).send({ message: 'Already friends with this user' });
     }
 
-    user.friends.push(friendToAdd._id);
-    await user.save();
+    if (friendToAdd.friendRequests.includes(user._id)) {
+      return res.status(400).send({ message: 'Friend request already sent' });
+    }
 
-    res.send({ message: 'Friend added successfully' });
+    friendToAdd.friendRequests.push(user._id);
+    await friendToAdd.save();
+
+    res.send({ message: 'Friend request sent successfully' });
   } catch (error) {
     res.status(400).send({ message: error.message });
+  }
+});
+
+// Accept friend request
+app.post('/users/:id/accept-friend', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.userId);
+    const friendToAccept = await User.findById(req.params.id);
+
+    if (!friendToAccept) {
+      return res.status(404).send({ message: 'User not found' });
+    }
+
+    if (!user.friendRequests.includes(friendToAccept._id)) {
+      return res.status(400).send({ message: 'No friend request from this user' });
+    }
+
+    user.friendRequests = user.friendRequests.filter(id => id.toString() !== req.params.id);
+    user.friends.push(friendToAccept._id);
+    friendToAccept.friends.push(user._id);
+
+    await user.save();
+    await friendToAccept.save();
+
+    res.send({ message: 'Friend request accepted' });
+  } catch (error) {
+    res.status(400).send({ message: error.message });
+  }
+});
+
+// Reject friend request
+app.post('/users/:id/reject-friend', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.userId);
+
+    user.friendRequests = user.friendRequests.filter(id => id.toString() !== req.params.id);
+    await user.save();
+
+    res.send({ message: 'Friend request rejected' });
+  } catch (error) {
+    res.status(400).send({ message: error.message });
+  }
+});
+
+// Get friend requests
+app.get('/users/friend-requests', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.userId).populate('friendRequests', 'username profilePicture');
+    res.send(user.friendRequests);
+  } catch (error) {
+    res.status(500).send({ message: error.message });
   }
 });
 
@@ -284,14 +398,24 @@ app.post('/users/:id/friends', auth, async (req, res) => {
 app.delete('/users/:id/friends', auth, async (req, res) => {
   try {
     const user = await User.findById(req.userId);
+    const friendToRemove = await User.findById(req.params.id);
+
+    if (!friendToRemove) {
+      return res.status(404).send({ message: 'User not found' });
+    }
+
     user.friends = user.friends.filter(friend => friend.toString() !== req.params.id);
+    friendToRemove.friends = friendToRemove.friends.filter(friend => friend.toString() !== req.userId);
+
     await user.save();
+    await friendToRemove.save();
 
     res.send({ message: 'Friend removed successfully' });
   } catch (error) {
     res.status(400).send({ message: error.message });
   }
 });
+
 
 // Like a post
 app.post('/posts/:id/like', auth, async (req, res) => {
